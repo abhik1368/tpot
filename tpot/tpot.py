@@ -127,8 +127,8 @@ class TPOT(object):
         for val in [100.0, 10.0, 1.0, 0.1, 0.01, 0.001, 0.0001]:
             self.pset.addTerminal(val, float)
 
-        creator.create('FitnessMax', base.Fitness, weights=(1.0,))
-        creator.create('Individual', gp.PrimitiveTree, fitness=creator.FitnessMax)
+        creator.create('FitnessMulti', base.Fitness, weights=(1.0, -1.0))
+        creator.create('Individual', gp.PrimitiveTree, fitness=creator.FitnessMulti)
 
         self.toolbox = base.Toolbox()
         self.toolbox.register('expr', gp.genHalfAndHalf, pset=self.pset, min_=1, max_=3)
@@ -1299,21 +1299,31 @@ else:
 
         """
         try:
-            # Transform the tree expression in a callable function
+            # Transform the tree expression into a callable function
             func = self.toolbox.compile(expr=individual)
         except MemoryError:
             # Throw out GP expressions that are too large to be compiled in Python
-            return 0.,
+            return 0., 5000.
+        
+        # Count the number of pipeline operators as a measure of pipeline complexity
+        operator_count = 0
+        for i in range(len(individual)):
+            node = individual[i]
+            if type(node) is deap.gp.Terminal:
+                continue
+            if type(node) is deap.gp.Primitive and node.name in ['add', 'sub', 'mul', '_div']:
+                continue
+            
+            operator_count += 1
 
         result = func(training_testing_data)
         result = result[result['group'] == 'testing']
         res = self.scoring_function(result)
         
         if isinstance(res, float) or isinstance(res, np.float64) or isinstance(res, np.float32):
-            return res,
+            return res, float(operator_count)
         else:
             raise ValueError('Scoring function does not return a float')
-            
 
     def _balanced_accuracy(self, result):
         """Default scoring function: balanced class accuracy
