@@ -128,7 +128,7 @@ class TPOT(object):
         for val in [100.0, 10.0, 1.0, 0.1, 0.01, 0.001, 0.0001]:
             self.pset.addTerminal(val, float)
 
-        creator.create('FitnessMulti', base.Fitness, weights=(1.0, -1.0))
+        creator.create('FitnessMulti', base.Fitness, weights=(-1.0, 1.0))
         creator.create('Individual', gp.PrimitiveTree, fitness=creator.FitnessMulti)
 
         self.toolbox = base.Toolbox()
@@ -199,8 +199,12 @@ class TPOT(object):
             self.toolbox.register('evaluate', self._evaluate_individual, training_testing_data=training_testing_data)
 
             pop = self.toolbox.population(n=self.population_size)
-            self.hof = tools.HallOfFame(maxsize=1)
-            stats = tools.Statistics(lambda ind: ind.fitness.values)
+            
+            def pareto_eq(ind1, ind2):
+                return np.all(ind1.fitness.values == ind2.fitness.values)
+            
+            self.hof = tools.ParetoFront(similar=pareto_eq)
+            stats = tools.Statistics(lambda ind: ind.fitness.values[1])
             stats.register('Minimum score', np.min)
             stats.register('Average score', np.mean)
             stats.register('Maximum score', np.max)
@@ -211,17 +215,20 @@ class TPOT(object):
                                            mutpb=self.mutation_rate, ngen=self.generations,
                                            stats=stats, halloffame=self.hof, verbose=verbose)
 
-            self.optimized_pipeline_ = self.hof[0]
+            self.optimized_pipeline_ = self.hof
 
             if self.verbosity == 2:
                 print('')
 
             if self.verbosity >= 1:
-                print('Best pipeline:', self.hof[0])
+                print('Best pipelines:')
+                for ind in self.hof:
+                    print('')
+                    print(ind)
 
         # Store the best pipeline if the optimization process is ended prematurely
         except KeyboardInterrupt:
-            self.optimized_pipeline_ = self.hof[0]
+            self.optimized_pipeline_ = self.hof
 
     def predict(self, training_features, training_classes, testing_features):
         """Uses the optimized pipeline to predict the classes for a feature set.
@@ -307,7 +314,7 @@ class TPOT(object):
             if type(column) != str:
                 training_testing_data.rename(columns={column: str(column).zfill(10)}, inplace=True)
 
-        return self._evaluate_individual(self.optimized_pipeline_, training_testing_data)[0]
+        return [self._evaluate_individual(individual, training_testing_data)[1] for individual in self.optimized_pipeline_]
 
 
     def _replace_mathematical_operators(self, exported_pipeline):
@@ -1314,7 +1321,7 @@ else:
             func = self.toolbox.compile(expr=individual)
         except MemoryError:
             # Throw out GP expressions that are too large to be compiled in Python
-            return 0., 5000.
+            return 5000., 0.
         
         # Count the number of pipeline operators as a measure of pipeline complexity
         operator_count = 0
@@ -1322,7 +1329,7 @@ else:
             node = individual[i]
             if type(node) is deap.gp.Terminal:
                 continue
-            if type(node) is deap.gp.Primitive and node.name in ['add', 'sub', 'mul', '_div']:
+            if type(node) is deap.gp.Primitive and node.name in ['add', 'sub', 'mul', '_div', '_combine_dfs']:
                 continue
             
             operator_count += 1
@@ -1332,7 +1339,7 @@ else:
         res = self.scoring_function(result)
         
         if isinstance(res, float) or isinstance(res, np.float64) or isinstance(res, np.float32):
-            return res, float(operator_count)
+            return max(1, operator_count), res
         else:
             raise ValueError('Scoring function does not return a float')
 
@@ -1378,15 +1385,7 @@ else:
             Returns a list of individuals that were selected
 
         """
-        
-        # 10% of the new population are copies of the current best-performing pipeline (i.e., elitism)
-        best_inds = int(0.1 * k)
-        
-        # The remaining 90% of the new population are selected by tournament selection
-        rest_inds = k - best_inds
-        return (tools.selBest(individuals, 1) * best_inds +
-                tools.selDoubleTournament(individuals, k=rest_inds, fitness_size=3,
-                                          parsimony_size=2, fitness_first=True))
+        return tools.selNSGA2(individuals, int(k / 5.)) * 5
 
     def _random_mutation_operator(self, individual):
         """Perform a replacement, insert, or shrink mutation on an individual
@@ -1512,14 +1511,12 @@ def main():
 
     if args.verbosity >= 1:
         print('\nTraining accuracy: {}'.format(tpot.score(training_features, training_classes,
-                                             training_features, training_classes)))
+                                                          training_features, training_classes)))
         print('Testing accuracy: {}'.format(tpot.score(training_features, training_classes,
-                                            testing_features, testing_classes)))
-    
+                                                       testing_features, testing_classes)))
+
     if args.output_file != '':
         tpot.export(args.output_file)
-
-
 
 
 if __name__ == '__main__':
